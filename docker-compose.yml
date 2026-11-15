@@ -1,0 +1,126 @@
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: job-mysql
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: job_analytics
+
+    ports:
+      - "3307:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p${DB_PASSWORD}"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  etl:
+    build: .
+
+    container_name: job-etl
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: job_analytics
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+
+    volumes:
+      - ./data:/app/data
+
+    command: python src/pipeline.py
+
+  airflow-api-server:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: job-airflow-api-server
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment: &airflow-environment
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "mysql+pymysql://root:${DB_PASSWORD}@mysql:3306/airflow_meta"
+      _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-fab==2.0.2"
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: job_analytics
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/app/src
+      - ./data:/app/data
+    command: airflow api-server
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: job-airflow-scheduler
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment: *airflow-environment
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/app/src
+      - ./data:/app/data
+    command: airflow scheduler
+
+  airflow-dag-processor:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: job-airflow-dag-processor
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment: *airflow-environment
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/app/src
+      - ./data:/app/data
+    command: airflow dag-processor
+
+  airflow-triggerer:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: job-airflow-triggerer
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment: *airflow-environment
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/app/src
+      - ./data:/app/data
+    command: airflow triggerer
+
+volumes:
+  mysql_data:
